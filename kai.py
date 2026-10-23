@@ -2,6 +2,8 @@ import os
 from dotenv import load_dotenv
 from ddgs import DDGS
 from groq import Groq
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 
 load_dotenv()
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -27,14 +29,12 @@ Você lembra de toda a conversa e usa isso pra ser mais próximo.
 ]
 
 def reescrever_pergunta(pergunta):
-    # Pega só as últimas 3 trocas pra não ficar pesado
     ultimas_conversas = historico[-6:] 
     prompt = f"""
     Reescreva a última pergunta do usuário para ficar completa e independente, usando o histórico.
     Histórico: {ultimas_conversas}
     Pergunta atual: {pergunta}
     Responda APENAS com a pergunta reescrita. Se já estiver completa, repita igual.
-    Exemplo: Histórico fala de prefeito de Salvador. Pergunta: "e o vice dele?" -> Resposta: "quem é o vice prefeito de Salvador?"
     """
     try:
         resp = client.chat.completions.create(
@@ -47,8 +47,7 @@ def reescrever_pergunta(pergunta):
         return pergunta
 
 def precisa_buscar(pergunta):
-    # Roteador inteligente com a própria IA
-    prompt = f"Essa pergunta precisa de busca na internet para estar atualizada? Pergunta: '{pergunta}'. Responda apenas SIM ou NAO. SIM para notícias, cotações, pessoas atuais, preços. NAO para oi, obrigado, opinião, conselho."
+    prompt = f"Essa pergunta precisa de busca na internet para estar atualizada? Pergunta: '{pergunta}'. Responda apenas SIM ou NAO."
     try:
         resp = client.chat.completions.create(
             model="openai/gpt-oss-20b",
@@ -68,18 +67,11 @@ def buscar_na_internet(pergunta):
         contexto += f"{r['title']}: {r['body']} ({r['href']})\n"
     return contexto
 
-print("--- KAI v5 ---")
-
-while True:
-    pergunta = input("\nVocê: ")
-    if pergunta.lower() in ["sair", "exit"]:
-        break
-
+def responder_kai_interno(pergunta):
     pergunta_para_busca = reescrever_pergunta(pergunta)
     
     if precisa_buscar(pergunta_para_busca):
         contexto = buscar_na_internet(pergunta_para_busca)
-        # Injeta o contexto mas NÃO guarda pra sempre na memória
         mensagens_para_ia = historico + [
             {"role": "system", "content": f"Contexto da internet: {contexto}"},
             {"role": "user", "content": pergunta}
@@ -90,13 +82,29 @@ while True:
     resposta = client.chat.completions.create(
         model="openai/gpt-oss-20b",
         messages=mensagens_para_ia,
-        temperature=0.9 # mais solto pra conversar
+        temperature=0.9
     ).choices[0].message.content
 
-    print(f"\nKai: {resposta}\n" + "-"*50)
     historico.append({"role": "user", "content": pergunta})
     historico.append({"role": "assistant", "content": resposta})
-
-    # Mantém a memória com no máximo 12 mensagens + system
     if len(historico) > 13:
-        historico = [historico[0]] + historico[-12:]
+        historico[:] = [historico[0]] + historico[-12:]
+
+    return resposta
+
+# --- SUA INTERFACE ROXA EM CIMA ---
+app = Flask(__name__)
+CORS(app)
+
+@app.route("/")
+def index(): return send_file("kai.html")
+
+@app.route("/api/chat", methods=["POST"])
+def chat_api():
+    pergunta = request.json.get("message","")
+    return jsonify({"reply": responder_kai_interno(pergunta)})
+
+if __name__ == "__main__":
+    print("--- KAI v6 com interface roxa tech ---")
+    print("Abrindo em http://localhost:5000")
+    app.run(port=5000, debug=False)
